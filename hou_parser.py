@@ -645,9 +645,11 @@ class {name}:
 if __name__ == '__main__':
     minify, full = HouModules.parse_help(verbose=True, as_text=True)
     print 'WRITE'
-    open('hou_full.py', 'w').write(full)
-    print 'FULL  SAVED: d:/hou_full.py'
-    open('hou_min.py', 'w').write(minify)
-    print 'SHORT SAVED: d:/hou_min.py'
+    path1 = os.path.abspath('hou_full.py')
+    open(path1, 'w').write(full)
+    print 'FULL VERSION SAVED:', path1
+    path2 = os.path.abspath('hou_min.py')
+    open(path2, 'w').write(minify)
+    print 'SHORT VERSION SAVED:', path2
     print 'COMPLETE'
 
