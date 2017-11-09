@@ -38,6 +38,7 @@ class HouModules(object):
         TYPES.FUNC: 2,
         TYPES.ENUM: 3
     }
+    cache_folder = os.path.normpath(os.path.expanduser('~/hou_help_cache'))
 
     def __init__(self, url, verbose=False, use_cache=True):
         self.is_valid = False
@@ -47,7 +48,7 @@ class HouModules(object):
         self.url = url
         self.page_content = ''
         from_cache = False
-        cache_file = os.path.normpath(os.path.expanduser('~/hou_help_cache/%s' % os.path.basename(url)))
+        cache_file = os.path.normpath(os.path.join(self.cache_folder, os.path.basename(url)))
         if use_cache:
             if os.path.exists(cache_file):
                 self.verbose('From cache "%s"' % os.path.basename(cache_file))
@@ -134,11 +135,14 @@ class HouModules(object):
     def parse_methods(self):
         # self methods
         ok = False
-        have_methods = self.soup.find('div', {'id': 'methods-body'})
+        have_methods = self.soup.find('div', {'id': 'methods-body'}) or self.soup.find('div', {'id': 'functions-body'})
         if have_methods:
-            self_methods_div = self.soup.find('div', {'class': 'methods_item_group item_group'})
+            self_methods_div = self.soup.find('div', {'class': 'methods_item_group item_group'}) or self.soup.find('div', {'class': 'functions_item_group item_group'})
             if self_methods_div:
                 for m in self_methods_div.find_all('div', {'class': re.compile('collapsible collapsed method item.*')}):
+                    if 'ni' in m['class']:
+                        # skip non implemented
+                        continue
                     method_title = m.find('p', {'class': 'label'}).text
                     description = m.find('div', {'class': 'content'}).text
                     name, args,  ret = self.parse_method_title(method_title.strip())
@@ -291,7 +295,7 @@ class HouModules(object):
 
     @classmethod
     def parse_return(cls, line):
-        line = line.replace('=', '').strip()
+        line = line.replace('=', '').strip().replace('`', '')
         # int , float , str or tuple
         if re.match(r"(.+,)+\s*\w+\s*or\s*\w+", line):
             return 'object'
@@ -375,6 +379,13 @@ class HouModules(object):
         s = re.search(r"=\s*(hou.([\w+]+)\(\(.*?\)\))", args)
         if s:
             args = args.replace(s.group(1), s.group(2))
+        r = re.search(r"(\w+)\s?=\s?\([\s\w.,]+\)", args)
+        if r:
+            args = args.replace(r.group(0), r.group(1))
+        m = re.search(r"(\w+)=\(['\"*,]+\)", args)
+        if m:
+            args = args.replace(m.group(0), m.group(1)+'=None')
+
         for a in args.split(','):
             a = a.strip().replace('Hom:hou.', '').replace('hou.', '').replace('Hom.', '').replace('Hom:', '')
             if '=' in a:
@@ -399,29 +410,36 @@ class HouModules(object):
         line = line.replace('=', '').replace('::', '.').replace(':', '.').strip()
         if not line:
             return 'None'
-        if line in ['double', 'float']:
+        if line in ['double', 'float', 'floats']:
             return '0.0'
-        elif line in ['int', 'start', 'end']:
+        elif line in ['int', 'start', 'end', 'integer']:
             return '0'
-        elif line == 'bool':
+        elif line in ['bool', 'Boolean', 'true', 'True', 'false', 'False']:
             return 'True'
         elif line in ['string', 'str', 'strings']:
             return '""'
-        elif line in ['dict', '{}']:
+        elif line in ['dict', '{}', 'dictionary', 'dictionaries']:
             return '{}'
         elif line == 'parm':
             return 'Parm'
         elif line == '()':
             return 'tuple()'
+        elif line == 'Nodes':
+            return 'Node'
+        elif line == 'Vector3s':
+            return 'Vector3'
+
         elif line.startswith('hou.') or 'hou.' in line:
             return line.split('hou.')[-1]
         elif line.startswith('Hom.') or 'Hom.' in line:
             return line.split('hou.')[-1]
+        elif line.strip() in ['value', 'values']:
+            return 'object'
 
         elif line[0].istitle():
             return line
         else:
-            return line
+            return 'object'
 
     def verbose(self, *args):
         if self._verbose:
@@ -462,7 +480,7 @@ class HouModules(object):
     def as_text(self, docs=True):
         text = ''
         #################### CLASS
-        if self.type == self.TYPES.CLASS:
+        if self.type == self.TYPES.CLASS or self.type == self.TYPES.MODULE:
             if docs:
                 d = '%s\n%s' % (
                     self.legal_text(self.doc),
@@ -524,23 +542,23 @@ class {name}({inherit}):
             else:
                 text += '    pass'
         ##################### MODULE
-        elif self.type == self.TYPES.MODULE:
-            if docs:
-                d = '%s\n%s' % (
-                    self.legal_text(self.doc.replace('"""', "'''")).strip(),
-                    self.url
-                )
-                d = self.to_doc_string(d)
-            else:
-                d = 'pass\n'
-            text += """
-class {name}({inherit}):
-    {doc}
-""".format(
-                name=self.name,
-                inherit=', '.join([x.split('.')[0] for x in self.inherits]),
-                doc=d
-            )
+#         elif self.type == self.TYPES.MODULE:
+#             if docs:
+#                 d = '%s\n%s' % (
+#                     self.legal_text(self.doc.replace('"""', "'''")).strip(),
+#                     self.url
+#                 )
+#                 d = self.to_doc_string(d)
+#             else:
+#                 d = 'pass\n'
+#             text += """
+# class {name}({inherit}):
+#     {doc}
+# """.format(
+#                 name=self.name,
+#                 inherit=', '.join([x.split('.')[0] for x in self.inherits]),
+#                 doc=d
+#             )
         ########################### FUNCTION
         elif self.type == self.TYPES.FUNC:
             if isinstance(self.doc, list):
@@ -561,7 +579,7 @@ class {name}({inherit}):
 
             text += """
 def {name}{args}:
-{doc}
+{doc}    
     return {parse_ret}
 """.format(
                 name=self.function['name'],
@@ -628,7 +646,6 @@ class {name}:
             hou_mod = cls(root_url + elem.find('a')['href'], verbose, save_cache)
             if hou_mod.is_valid:
                 hou_modules.append(hou_mod)
-
         # sort
         classes = [x for x in hou_modules if x.type == HouModules.TYPES.CLASS]
         modules = [x for x in hou_modules if x.type == HouModules.TYPES.MODULE]
@@ -640,7 +657,7 @@ class {name}:
         enumerates = sorted(enumerates, key=lambda x: x.name)
 
         hou_modules = enumerates + classes + modules + functions
-
+        print 'Cache folder: ', cls.cache_folder
         if not as_text:
             d = datetime.timedelta(seconds=time.time() - _start)
             print 'Total time: %s' % str(d).split('.')[0]
