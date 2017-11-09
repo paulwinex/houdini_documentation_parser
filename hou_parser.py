@@ -138,7 +138,7 @@ class HouModules(object):
         if have_methods:
             self_methods_div = self.soup.find('div', {'class': 'methods_item_group item_group'})
             if self_methods_div:
-                for m in self_methods_div.find_all('div', {'class': 'collapsible collapsed method item '}):
+                for m in self_methods_div.find_all('div', {'class': re.compile('collapsible collapsed method item.*')}):
                     method_title = m.find('p', {'class': 'label'}).text
                     description = m.find('div', {'class': 'content'}).text
                     name, args,  ret = self.parse_method_title(method_title.strip())
@@ -334,7 +334,9 @@ class HouModules(object):
         m = re.match(r"dict\s+of\s+[\s\w\[\].:]+\s+enum\s+value\s+to\s+([\w.]+)", line)
         if m:
             return '{EnumValue: %s}' % cls.type_to_data(m.group(1))
-
+        m = re.search(r"(dict|dictionary)\s+mapping\s+\w+\s+to\s+\w+", line)
+        if m:
+            return '{"": ""}'
         m = re.match(r"\(([\s\w,._]+)\)", line)
         if m and ',' in line:
             args = [cls.type_to_data(x.strip()) for x in m.group(1).split(',')]
@@ -443,133 +445,147 @@ class HouModules(object):
             args = cls.add_self_to_args(args, str(add_self))
         return '(%s)' % ', '.join(args)
 
+    @staticmethod
+    def to_doc_string(text, indent=4):
+        if not text.strip():
+            return ''
+        new_line = '\n' + (' ' * indent)
+        offs = ''.join([x.strip() + new_line for x in text.replace('"""', "'''").split('\n')]).strip()
+        return '{0}\"\"\"{2}{1}\n{0}\"\"\"\n{0}'.format(' '*indent, offs, new_line)
+
+    @staticmethod
+    def to_comment(text, indent=4):
+        new_line = '\n' + (' ' * indent)
+        offs = ''.join(['# ' + x.strip() + new_line for x in text.split('\n')])
+        return (' ' * indent) + offs
+
     def as_text(self, docs=True):
         text = ''
         #################### CLASS
         if self.type == self.TYPES.CLASS:
             if docs:
-                d = """\"\"\"
-    {url}
-    {doc}
-    \"\"\"""".format(doc=self.legal_text(self.doc).replace('"""', "'''") if docs else '',
-                     url=self.url)
+                d = '%s\n%s' % (
+                    self.legal_text(self.doc),
+                    self.url
+                )
             else:
-                d = """\"\"\"
-    {url}
-    \"\"\"""".format(url=self.url)
+                d = ''
             text += """
 class {name}({inherit}):
-    {doc}
+{doc}
 """.format(
                 name=self.name,
                 inherit=', '.join([x.split('.')[-1] for x in self.inherits]),
-                doc=d
+                # doc=d
+                doc=self.to_doc_string(d, 4)
             )
-            for m in self.methods:
-                if docs:
-                    d = """\"\"\"
-        {doc}
-        # return {ret}
-        \"\"\"\n        """.format(doc='\n        '.join(self.legal_text(m['doc'].replace('"""', "'''")).strip().split('\n')) if docs else '',
-                                   ret=m['ret'].replace('=', '').strip())
-                else:
-                    d = ''
-
-                text += """
+            if self.methods or self.static_functions:
+                for m in self.methods:
+                    if docs:
+                        d = '%s\nreturn %s' % (
+                            self.legal_text(m['doc']).strip(),
+                            m['ret'].replace('=', '').strip()
+                        )
+                    else:
+                        d = ''
+                    if m['name'] == '__init__':
+                        ret = 'pass'
+                    else:
+                        ret = 'return '+self.parse_return(m['ret'])
+                    text += """
     def {name}{args}:
-        {doc}return {parse_ret}
-""".format(
-                    name=m['name'],
-                    args=self.args_to_str(m['args'], 'self'),
-                    doc=d,
-                    parse_ret=self.parse_return(m['ret'])
-                )
-            for f in self.static_functions:
-                if docs:
-                    d = """\"\"\"
-        {doc}
-        # return {ret}
-        \"\"\"\n        """.format(doc='\n        '.join(self.legal_text(f['doc'].replace('"""', "'''")).strip().split('\n')) if docs else '',
-                                   ret=f['ret'].replace('=', '').strip())
-                else:
-                    d = ''
-                text += """
+{doc}
+        {parse_ret}
+    """.format(
+                        name=m['name'],
+                        args=self.args_to_str(m['args'], 'self'),
+                        doc=self.to_doc_string(d, 8),
+                        parse_ret=ret
+                    )
+                for f in self.static_functions:
+                    if docs:
+                        d = '%s\nreturn %s' % (
+                            self.legal_text(f['doc'].replace('"""', "'''")).strip(),
+                            f['ret'].replace('=', '').strip()
+                        )
+                    else:
+                        d = ''
+                    text += """
     @classmethod
     def {name}{args}:
-        {doc}return {parse_ret}
-""".format(
-                    name=f['name'],
-                    # args=self.add_self_to_args(f['args'], 'cls'),
-                    args=self.args_to_str(f['args'], 'cls'),
-                    doc=d,
-                    parse_ret=self.parse_return(f['ret'])
-                )
+{doc}
+        return {parse_ret}
+    """.format(
+                        name=f['name'],
+                        args=self.args_to_str(f['args'], 'cls'),
+                        doc=self.to_doc_string(d, 8),
+                        parse_ret=self.parse_return(f['ret'])
+                    )
+            else:
+                text += '    pass'
         ##################### MODULE
         elif self.type == self.TYPES.MODULE:
             if docs:
-                d ="""\"\"\"
-    {url}
-    {doc}
-    \"\"\"""".format(doc='\n    '.join(self.legal_text(self.doc.replace('"""', "'''")).strip().split('\n')),
-                     url=self.url)
+                d = '%s\n%s' % (
+                    self.legal_text(self.doc.replace('"""', "'''")).strip(),
+                    self.url
+                )
+                d = self.to_doc_string(d)
             else:
-                d = """\"\"\"
-    {url}
-    \"\"\"""".format(url=self.url)
+                d = 'pass\n'
             text += """
 class {name}({inherit}):
     {doc}
 """.format(
                 name=self.name,
-                # url=self.url,
                 inherit=', '.join([x.split('.')[0] for x in self.inherits]),
                 doc=d
             )
         ########################### FUNCTION
         elif self.type == self.TYPES.FUNC:
             if isinstance(self.doc, list):
-                self.doc = '\n    '.join(self.doc)
+                self.doc = '\n'.join(self.doc)
+
             if docs:
-                d = """
-    \"\"\"
-    {url}
-    {doc}
-    \"\"\"
-    # return {ret}\n    """.format(
-                    doc=self.legal_text(self.doc) + '\n\n    '+'\n    '.join(self.legal_text(self.function['doc'].replace('"""', "'''")).strip().split('\n')),
-                    url=self.url,
-                    ret=self.function['ret'].replace('=', '').strip())
+                d = '%s\n' \
+                    '%s\n' \
+                    '%s\n' \
+                    'return %s' % (
+                        self.url,
+                        self.legal_text(self.doc),
+                        self.legal_text(self.function['doc'].replace('"""', "'''")).strip(),
+                        self.function['ret'].replace('=', '').strip()
+                    )
             else:
                 d = ''
+
             text += """
 def {name}{args}:
-    {doc}return {parse_ret}
+{doc}
+    return {parse_ret}
 """.format(
                 name=self.function['name'],
-                url=self.url,
                 args=self.args_to_str(self.function['args']),
-                doc=d,
+                doc=self.to_doc_string(d),
                 parse_ret=self.parse_return(self.function['ret'])
             )
         ########################## ENUM
         elif self.type == self.TYPES.ENUM:
             d = ''
             if docs:
-                d = """
-    {doc}
-""".format(doc=self.doc.replace('\n', '    \n'))
+                d = '%s\n' \
+                    '%s' % (
+                        self.doc,
+                        self.url
+                    )
             text += """
 class {name}:
-    \"\"\"
-    {url}
-    {doc}
-    \"\"\"
+{doc}
 {enum}
 """.format(
                 name=self.name,
-                doc=d,
-                url=self.url,
-                enum='\n'.join(['    {name}=EnumValue'.format(name=x['name']) +
+                doc=self.to_doc_string(d),
+                enum='\n'.join(['    {name} = EnumValue'.format(name=x['name']) +
                                 ('\n    # {doc}'.format(doc=self.legal_text(x['description'].replace('\n', '\n    # ').replace('"""', "'''")).strip())
                                  if (x['description'].strip() and docs)else '') for x in self.enum])
             )
@@ -598,13 +614,13 @@ class {name}:
 
     @classmethod
     def parse_help(cls, verbose=False, as_text=True, save_cache=True):
+        import time, datetime
+        _start = time.time()
         root_url = 'http://www.sidefx.com/docs/houdini/hom/hou/'
         page = requests.get(root_url)
         s = BeautifulSoup(page.content, 'html.parser')
         hou_modules = []
         all_modules = s.find_all('li', {'class': 'subtopics_item'})
-        import random
-        random.shuffle(all_modules)
         for i, elem in enumerate(all_modules):
             if verbose:
                 print '-'*50
@@ -612,6 +628,7 @@ class {name}:
             hou_mod = cls(root_url + elem.find('a')['href'], verbose, save_cache)
             if hou_mod.is_valid:
                 hou_modules.append(hou_mod)
+
         # sort
         classes = [x for x in hou_modules if x.type == HouModules.TYPES.CLASS]
         modules = [x for x in hou_modules if x.type == HouModules.TYPES.MODULE]
@@ -621,9 +638,12 @@ class {name}:
         modules = sorted(modules, key=lambda x: x.name)
         functions = sorted(functions, key=lambda x: x.name)
         enumerates = sorted(enumerates, key=lambda x: x.name)
+
         hou_modules = enumerates + classes + modules + functions
 
         if not as_text:
+            d = datetime.timedelta(seconds=time.time() - _start)
+            print 'Total time: %s' % str(d).split('.')[0]
             return hou_modules
         # to text
         min_array = []
@@ -639,7 +659,9 @@ class {name}:
                 print e
                 continue
         qt_import = 'from PySide2.QtWidgets import *\n'
-        return qt_import+'\n\n'.join(min_array), qt_import+'\n\n'.join(full_array)
+        d = datetime.timedelta(seconds=time.time() - _start)
+        print 'Total time: %s' % str(d).split('.')[0]
+        return qt_import+'\n'.join(min_array), qt_import+'\n'.join(full_array)
 
 
 if __name__ == '__main__':
